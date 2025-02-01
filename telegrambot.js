@@ -132,6 +132,23 @@ const scrapeDexScreener = async (address) => {
       ).toLocaleString()}\n`;
     }
 
+    // Add holder information if available
+    if (mainPair.holders) {
+      marketInfo += "\n👥 Top Holders:\n";
+      if (mainPair.holders.top10Share) {
+        marketInfo += `  • Top 10 Hold: ${mainPair.holders.top10Share}%\n`;
+      }
+      if (mainPair.holders.top20Share) {
+        marketInfo += `  • Top 20 Hold: ${mainPair.holders.top20Share}%\n`;
+      }
+      if (mainPair.holders.top50Share) {
+        marketInfo += `  • Top 50 Hold: ${mainPair.holders.top50Share}%\n`;
+      }
+      if (mainPair.holders.count) {
+        marketInfo += `  • Total Holders: ${mainPair.holders.count.toLocaleString()}\n`;
+      }
+    }
+
     // Add price information
     marketInfo += `\n💰 Price & Volume:\n`;
     if (mainPair.priceUsd) {
@@ -186,14 +203,28 @@ const scrapeDexScreener = async (address) => {
       });
     }
 
-    // Add social and other links
+    // Add social and other links with more detail
     const links = [];
-    if (token.twitter)
-      links.push(`  • Twitter: https://twitter.com/${token.twitter}`);
-    if (token.telegram)
-      links.push(`  • Telegram: https://t.me/${token.telegram}`);
-    if (token.discord) links.push(`  • Discord: ${token.discord}`);
-    if (token.website) links.push(`  • Website: ${token.website}`);
+    if (token.twitter) {
+      const twitterHandle = token.twitter.replace("@", "");
+      links.push(`  • Twitter: https://twitter.com/${twitterHandle}`);
+    }
+    if (token.telegram) {
+      const telegramGroup = token.telegram.replace("@", "");
+      links.push(`  • Telegram: https://t.me/${telegramGroup}`);
+    }
+    if (token.discord) {
+      links.push(`  • Discord: ${token.discord}`);
+    }
+    if (token.website) {
+      links.push(`  • Website: ${token.website}`);
+    }
+
+    // Add contract addresses if available
+    if (token.address) {
+      marketInfo += "\n📝 Contract Addresses:\n";
+      marketInfo += `  • XRPL: ${token.address}\n`;
+    }
 
     if (links.length > 0) {
       marketInfo += "\n🔗 Token Links:\n";
