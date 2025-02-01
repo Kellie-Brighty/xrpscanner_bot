@@ -15,6 +15,22 @@ const bot = new TelegramBot(token, { polling: true });
 console.log("Bot is running...");
 bot.setMyCommands([{ command: "/start", description: "Start the bot" }]);
 
+// Update the constants at the top
+const REQUIRED_CHANNEL_ID = process.env.REQUIRED_CHANNEL_ID; // Replace with your channel's ID (starts with -100)
+const REQUIRED_CHANNEL_URL = "https://t.me/NorthernLabs";
+
+// Modify the membership check function
+const checkChannelMembership = async (bot, userId) => {
+  try {
+    const chatMember = await bot.getChatMember(REQUIRED_CHANNEL_ID, userId);
+    return ["member", "administrator", "creator"].includes(chatMember.status);
+  } catch (error) {
+    console.error("Error checking membership:", error);
+    // If we can't check membership, we'll assume they're not a member
+    return false;
+  }
+};
+
 // Send welcome message to any new chat with the bot
 bot.on("new_chat_members", async (msg) => {
   const newMembers = msg.new_chat_members;
@@ -29,73 +45,154 @@ bot.on("new_chat_members", async (msg) => {
   }
 });
 
-// Command: /start
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    "Welcome! Simply paste an XRP address and I'll scan it for you."
-  );
+// Modify the /start command handler
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  // Skip if message is in group chat
+  if (msg.chat.type !== "private") return;
+
+  try {
+    const isMember = await checkChannelMembership(bot, userId);
+
+    if (!isMember) {
+      await bot.sendMessage(
+        chatId,
+        "👋 *Welcome to XRP Scanner Bot!*\n\n" +
+          "To use this bot, you need to:\n" +
+          "1️⃣ Join our channel using the button below\n" +
+          "2️⃣ Return here and send any XRP address to scan\n\n" +
+          "Once you've joined, you can scan any XRP token address!",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Join Our Channel", url: REQUIRED_CHANNEL_URL }],
+            ],
+          },
+        }
+      );
+      return;
+    }
+
+    bot.sendMessage(
+      chatId,
+      "Welcome! Simply paste an XRP address and I'll scan it for you."
+    );
+  } catch (error) {
+    console.error("Error in start command:", error);
+  }
 });
 
-// Listen for any message that looks like an XRP address
+// Modify the message handler
 bot.on("message", async (msg) => {
   const text = msg.text;
   const chatId = msg.chat.id;
+  const userId = msg.from.id;
 
-  // Skip commands
-  if (text.startsWith("/")) return;
+  // Skip if message is in group chat
+  if (msg.chat.type !== "private") return;
 
-  // Check if the message matches XRP address format
-  if (text.match(/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/)) {
-    try {
-      console.log(`Processing address: ${text}`);
+  try {
+    const isMember = await checkChannelMembership(bot, userId);
 
-      // Show typing state
-      bot.sendChatAction(chatId, "typing");
+    if (!isMember) {
+      await bot.sendMessage(
+        chatId,
+        "⚠️ *You need to join our channel to use this bot*\n\nPlease join using the button below, then try your request again.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Join Our Channel", url: REQUIRED_CHANNEL_URL }],
+            ],
+          },
+        }
+      );
+      return;
+    }
 
-      const tokenInfo = await fetchTokenInfo(text);
-      console.log("Token info received:", tokenInfo);
+    // Skip commands
+    if (text.startsWith("/")) return;
 
-      // If there's an image, send it with a brief caption
-      if (tokenInfo.imageUrl) {
-        console.log("Sending message with image:", tokenInfo.imageUrl);
-        const briefCaption = `${tokenInfo.text
-          .split("\n")
-          .slice(0, 8)
-          .join("\n")}`;
+    // Check if the message matches XRP address format
+    if (text.match(/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/)) {
+      try {
+        console.log(`Processing address: ${text}`);
 
-        try {
-          await bot.sendPhoto(chatId, tokenInfo.imageUrl, {
-            caption: briefCaption,
-            parse_mode: "Markdown",
-          });
+        // Show typing state
+        bot.sendChatAction(chatId, "typing");
 
-          // Send the rest of the information as a separate message
-          const remainingInfo = tokenInfo.text.split("\n").slice(8).join("\n");
-          await bot.sendMessage(chatId, remainingInfo, {
-            parse_mode: "Markdown",
-            disable_web_page_preview: true,
-          });
-        } catch (photoError) {
-          console.error("Error sending photo:", photoError);
-          // Fallback to text-only if photo fails
+        const tokenInfo = await fetchTokenInfo(text);
+        console.log("Token info received:", tokenInfo);
+
+        // If there's an image, send it with a brief caption
+        if (tokenInfo.imageUrl) {
+          console.log("Sending message with image:", tokenInfo.imageUrl);
+          const briefCaption = `${tokenInfo.text
+            .split("\n")
+            .slice(0, 8)
+            .join("\n")}`;
+
+          try {
+            await bot.sendPhoto(chatId, tokenInfo.imageUrl, {
+              caption: briefCaption,
+              parse_mode: "Markdown",
+            });
+
+            // Send the rest of the information as a separate message
+            const remainingInfo = tokenInfo.text
+              .split("\n")
+              .slice(8)
+              .join("\n");
+            await bot.sendMessage(chatId, remainingInfo, {
+              parse_mode: "Markdown",
+              disable_web_page_preview: true,
+            });
+          } catch (photoError) {
+            console.error("Error sending photo:", photoError);
+            // Fallback to text-only if photo fails
+            await bot.sendMessage(chatId, tokenInfo.text, {
+              parse_mode: "Markdown",
+              disable_web_page_preview: true,
+            });
+          }
+        } else {
+          console.log("Sending text-only message");
           await bot.sendMessage(chatId, tokenInfo.text, {
             parse_mode: "Markdown",
             disable_web_page_preview: true,
           });
         }
-      } else {
-        console.log("Sending text-only message");
-        await bot.sendMessage(chatId, tokenInfo.text, {
-          parse_mode: "Markdown",
-          disable_web_page_preview: true,
-        });
+      } catch (error) {
+        console.error("Error in message handler:", error);
+        bot.sendMessage(
+          chatId,
+          "⚠️ *Error fetching token data.* Please check the address and try again.",
+          { parse_mode: "Markdown" }
+        );
       }
-    } catch (error) {
-      console.error("Error in message handler:", error);
-      bot.sendMessage(
+    }
+  } catch (error) {
+    console.error("Error checking member status:", error);
+    if (error.response && error.response.statusCode === 403) {
+      await bot.sendMessage(
         chatId,
-        "⚠️ *Error fetching token data.* Please check the address and try again.",
+        "⚠️ *Please join our channel to use this bot*\n\nClick the button below to join.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Join Our Channel", url: REQUIRED_CHANNEL_URL }],
+            ],
+          },
+        }
+      );
+    } else {
+      await bot.sendMessage(
+        chatId,
+        "❌ An error occurred. Please try again later.",
         { parse_mode: "Markdown" }
       );
     }
@@ -220,7 +317,7 @@ const scrapeDexScreener = async (address) => {
     // Add debug logging
     console.log("Issuer Lines Response:", JSON.stringify(issuerLines, null, 2));
 
-    let marketInfo = "\n�� Market Information (DEXScreener):\n";
+    let marketInfo = "\n Market Information (DEXScreener):\n";
 
     // Add token information with description if available
     marketInfo += `\n🪙 Token Info:\n`;
