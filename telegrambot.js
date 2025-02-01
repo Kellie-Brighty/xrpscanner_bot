@@ -48,17 +48,51 @@ bot.on("message", async (msg) => {
   // Check if the message matches XRP address format
   if (text.match(/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/)) {
     try {
+      console.log(`Processing address: ${text}`);
+
       // Show typing state
       bot.sendChatAction(chatId, "typing");
 
       const tokenInfo = await fetchTokenInfo(text);
+      console.log("Token info received:", tokenInfo);
 
-      bot.sendMessage(chatId, tokenInfo, {
-        parse_mode: "Markdown",
-        disable_web_page_preview: true,
-      });
+      // If there's an image, send it with a brief caption
+      if (tokenInfo.imageUrl) {
+        console.log("Sending message with image:", tokenInfo.imageUrl);
+        const briefCaption = `${tokenInfo.text
+          .split("\n")
+          .slice(0, 8)
+          .join("\n")}`;
+
+        try {
+          await bot.sendPhoto(chatId, tokenInfo.imageUrl, {
+            caption: briefCaption,
+            parse_mode: "Markdown",
+          });
+
+          // Send the rest of the information as a separate message
+          const remainingInfo = tokenInfo.text.split("\n").slice(8).join("\n");
+          await bot.sendMessage(chatId, remainingInfo, {
+            parse_mode: "Markdown",
+            disable_web_page_preview: true,
+          });
+        } catch (photoError) {
+          console.error("Error sending photo:", photoError);
+          // Fallback to text-only if photo fails
+          await bot.sendMessage(chatId, tokenInfo.text, {
+            parse_mode: "Markdown",
+            disable_web_page_preview: true,
+          });
+        }
+      } else {
+        console.log("Sending text-only message");
+        await bot.sendMessage(chatId, tokenInfo.text, {
+          parse_mode: "Markdown",
+          disable_web_page_preview: true,
+        });
+      }
     } catch (error) {
-      console.error(error);
+      console.error("Error in message handler:", error);
       bot.sendMessage(
         chatId,
         "⚠️ *Error fetching token data.* Please check the address and try again.",
@@ -105,6 +139,10 @@ const scrapeDexScreener = async (address) => {
 
     // Use DEXScreener API instead of web scraping
     const dexscreenerUrl = `https://api.dexscreener.com/latest/dex/tokens/${currency}.${address}`;
+
+    // Log the DEXScreener URL being called
+    console.log("Fetching from DEXScreener:", dexscreenerUrl);
+
     const response = await axios.get(dexscreenerUrl, {
       headers: {
         Accept: "application/json",
@@ -113,23 +151,115 @@ const scrapeDexScreener = async (address) => {
       },
     });
 
+    // Log the raw response data
+    console.log(
+      "DEXScreener Response:",
+      JSON.stringify(response.data, null, 2)
+    );
+
     const data = response.data;
     if (!data.pairs || data.pairs.length === 0) {
+      console.log("No pairs found in DEXScreener response");
       return "\n⚠️ No trading pairs found on DEXScreener";
     }
 
-    let marketInfo = "\n📈 Market Information (DEXScreener):\n";
+    // Log the token data we're using
     const mainPair = data.pairs[0];
     const token = mainPair.baseToken;
 
-    // Add token information
+    console.log("Token Data:", {
+      name: token.name,
+      symbol: token.symbol,
+      totalSupply: token.totalSupply,
+      holders: mainPair.holders,
+      websites: mainPair.websites,
+      socials: mainPair.socials,
+    });
+
+    // Send token image if available
+    let imageUrl = null;
+    if (mainPair.info?.imageUrl) {
+      imageUrl = mainPair.info.imageUrl;
+    } else if (mainPair.info?.openGraph?.image) {
+      imageUrl = mainPair.info.openGraph.image;
+    }
+
+    // Get issuer's token balance from XRPL
+    const ws2 = new WebSocket("wss://xrplcluster.com/");
+    const issuerLines = await new Promise((resolve, reject) => {
+      let timeout = setTimeout(() => {
+        ws2.close();
+        reject(new Error("WebSocket timeout"));
+      }, 10000); // 10 second timeout
+
+      ws2.onopen = () => {
+        ws2.send(
+          JSON.stringify({
+            command: "account_lines",
+            account: address,
+            ledger_index: "validated",
+            limit: 400,
+          })
+        );
+      };
+
+      ws2.onmessage = (event) => {
+        clearTimeout(timeout);
+        const data = JSON.parse(event.data);
+        resolve(data);
+        ws2.close();
+      };
+
+      ws2.onerror = (error) => {
+        clearTimeout(timeout);
+        reject(error);
+        ws2.close();
+      };
+    });
+
+    // Add debug logging
+    console.log("Issuer Lines Response:", JSON.stringify(issuerLines, null, 2));
+
+    let marketInfo = "\n�� Market Information (DEXScreener):\n";
+
+    // Add token information with description if available
     marketInfo += `\n🪙 Token Info:\n`;
     marketInfo += `  • Name: ${token.name}\n`;
     marketInfo += `  • Symbol: ${token.symbol}\n`;
+
     if (token.totalSupply) {
-      marketInfo += `  • Total Supply: ${Number(
-        token.totalSupply
-      ).toLocaleString()}\n`;
+      const totalSupply = Number(token.totalSupply);
+      marketInfo += `  • Total Supply: ${totalSupply.toLocaleString()}\n`;
+
+      // Calculate issuer balance from XRPL data
+      if (issuerLines.result?.lines) {
+        const issuerBalance = issuerLines.result.lines.reduce((total, line) => {
+          console.log("Processing line:", line); // Debug log
+          if (line.currency === token.symbol) {
+            const balance = Math.abs(Number(line.balance));
+            console.log(`Found matching currency. Balance: ${balance}`); // Debug log
+            return total + balance;
+          }
+          return total;
+        }, 0);
+
+        console.log(`Total issuer balance: ${issuerBalance}`); // Debug log
+        console.log(`Total supply: ${totalSupply}`); // Debug log
+
+        if (issuerBalance > 0) {
+          const devHoldingPercent = (issuerBalance / totalSupply) * 100;
+          console.log(`Dev holding percentage: ${devHoldingPercent}%`); // Debug log
+          marketInfo += `  • Dev Holdings: ${devHoldingPercent.toFixed(
+            2
+          )}% (${issuerBalance.toLocaleString()} tokens)\n`;
+        } else {
+          marketInfo += `  • Dev Holdings: 0%\n`;
+        }
+      }
+    }
+
+    if (mainPair.info?.openGraph?.description) {
+      marketInfo += `  • Description: ${mainPair.info.openGraph.description}\n`;
     }
 
     // Add holder information if available
@@ -205,29 +335,33 @@ const scrapeDexScreener = async (address) => {
 
     // Add social and other links with more detail
     const links = [];
-    if (token.twitter) {
-      const twitterHandle = token.twitter.replace("@", "");
-      links.push(`  • Twitter: https://twitter.com/${twitterHandle}`);
-    }
-    if (token.telegram) {
-      const telegramGroup = token.telegram.replace("@", "");
-      links.push(`  • Telegram: https://t.me/${telegramGroup}`);
-    }
-    if (token.discord) {
-      links.push(`  • Discord: ${token.discord}`);
-    }
-    if (token.website) {
-      links.push(`  • Website: ${token.website}`);
+
+    // Add website from websites array
+    if (mainPair.info.websites && mainPair.info.websites.length > 0) {
+      const website = mainPair.info.websites.find((w) => w.label === "Website");
+      if (website) {
+        links.push(`  • Website: ${website.url}`);
+      }
     }
 
-    // Add contract addresses if available
-    if (token.address) {
-      marketInfo += "\n📝 Contract Addresses:\n";
-      marketInfo += `  • XRPL: ${token.address}\n`;
+    if (mainPair.info.socials && mainPair.info.socials.length > 0) {
+      mainPair.info.socials.forEach((social) => {
+        switch (social.type) {
+          case "twitter":
+            links.push(`  • Twitter: ${social.url}`);
+            break;
+          case "telegram":
+            links.push(`  • Telegram: ${social.url}`);
+            break;
+          case "discord":
+            links.push(`  • Discord: ${social.url}`);
+            break;
+        }
+      });
     }
 
     if (links.length > 0) {
-      marketInfo += "\n🔗 Token Links:\n";
+      marketInfo += "\n🔗 Socials:\n";
       marketInfo += links.join("\n") + "\n";
     }
 
@@ -235,149 +369,53 @@ const scrapeDexScreener = async (address) => {
     const dexscreenerWebUrl = `https://dexscreener.com/xrpl/${currency}.${address}`;
     marketInfo += `\n🔍 View on DEXScreener: ${dexscreenerWebUrl}\n`;
 
-    return marketInfo;
+    return {
+      text: marketInfo,
+      imageUrl: imageUrl,
+    };
   } catch (error) {
     console.error("Error fetching DEXScreener info:", error);
-    return "\n⚠️ Unable to fetch DEXScreener information";
-  }
-};
-
-const scrapeTokenInfo = async (address) => {
-  try {
-    // Try xrpscan.com first
-    const xrpscanUrl = `https://xrpscan.com/account/${address}`;
-    const response = await axios.get(xrpscanUrl);
-    const $ = cheerio.load(response.data);
-
-    let additionalInfo = "\n📊 Additional Information:\n";
-
-    // Get domain/website if available
-    const domain = $('a[href^="http"]')
-      .filter((i, el) => {
-        const href = $(el).attr("href");
-        return (
-          href && !href.includes("xrpscan.com") && !href.includes("xrpl.org")
-        );
-      })
-      .first()
-      .text();
-
-    if (domain) {
-      additionalInfo += `  • Website: ${domain}\n`;
-    }
-
-    // Get KYC status if available
-    const kycStatus = $('span:contains("KYC")').parent().text().trim();
-    if (kycStatus) {
-      additionalInfo += `  • KYC Status: ${kycStatus}\n`;
-    }
-
-    // Get total supply if available
-    const totalSupply = $('td:contains("Total Supply")').next().text().trim();
-    if (totalSupply) {
-      additionalInfo += `  • Total Supply: ${totalSupply}\n`;
-    }
-
-    // Get top holders count if available
-    const holdersCount = $('td:contains("Holders")').next().text().trim();
-    if (holdersCount) {
-      additionalInfo += `  • Total Holders: ${holdersCount}\n`;
-    }
-
-    // Get social links
-    const socialLinks = {
-      twitter: $('a[href*="twitter.com"]').attr("href"),
-      telegram: $('a[href*="t.me"]').attr("href"),
-      discord: $('a[href*="discord"]').attr("href"),
+    return {
+      text: "\n⚠️ Unable to fetch DEXScreener information",
+      imageUrl: null,
     };
-
-    if (Object.values(socialLinks).some((link) => link)) {
-      additionalInfo += "\n🔗 Social Links:\n";
-      if (socialLinks.twitter)
-        additionalInfo += `  • Twitter: ${socialLinks.twitter}\n`;
-      if (socialLinks.telegram)
-        additionalInfo += `  • Telegram: ${socialLinks.telegram}\n`;
-      if (socialLinks.discord)
-        additionalInfo += `  • Discord: ${socialLinks.discord}\n`;
-    }
-
-    // Get DEXScreener information
-    const dexScreenerInfo = await scrapeDexScreener(address);
-    additionalInfo += dexScreenerInfo;
-
-    return additionalInfo;
-  } catch (error) {
-    console.error("Error scraping additional info:", error);
-    return "";
   }
 };
 
 const fetchTokenInfo = async (issuerAddress) => {
   try {
     if (!issuerAddress.match(/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/)) {
-      return "❌ Invalid issuer address format. Addresses start with 'r' and are 25-34 characters long.";
+      return {
+        text: "❌ Invalid issuer address format. Addresses start with 'r' and are 25-34 characters long.",
+        imageUrl: null,
+      };
     }
 
     const ws = new WebSocket("wss://xrplcluster.com/");
 
-    // Get both account_lines and account_info
-    const response = await Promise.all([
-      new Promise((resolve, reject) => {
-        ws.onopen = () => {
-          ws.send(
-            JSON.stringify({
-              command: "account_lines",
-              account: issuerAddress,
-              ledger_index: "validated",
-              limit: 400,
-            })
-          );
-        };
+    // Get account info
+    const accountData = await new Promise((resolve, reject) => {
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            command: "account_info",
+            account: issuerAddress,
+            ledger_index: "validated",
+          })
+        );
+      };
 
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          resolve(data);
-        };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        resolve(data);
+        ws.close();
+      };
 
-        ws.onerror = (error) => reject(error);
-      }),
-      new Promise((resolve, reject) => {
-        const ws2 = new WebSocket("wss://xrplcluster.com/");
-        ws2.onopen = () => {
-          ws2.send(
-            JSON.stringify({
-              command: "account_info",
-              account: issuerAddress,
-              ledger_index: "validated",
-            })
-          );
-        };
-
-        ws2.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          resolve(data);
-          ws2.close();
-        };
-
-        ws2.onerror = (error) => {
-          reject(error);
-          ws2.close();
-        };
-      }),
-    ]);
-
-    const [linesData, accountData] = response;
-    console.log("Token data:", linesData);
-    console.log("Account data:", accountData);
-
-    if (linesData.error) {
-      return `❌ Error: ${linesData.error_message || linesData.error}`;
-    }
-
-    const lines = linesData.result.lines;
-    if (!lines || lines.length === 0) {
-      return `❌ No tokens found for this issuer address.`;
-    }
+      ws.onerror = (error) => {
+        reject(error);
+        ws.close();
+      };
+    });
 
     const accountInfo = accountData.result.account_data;
     const accountFlags = {
@@ -390,9 +428,9 @@ const fetchTokenInfo = async (issuerAddress) => {
     // Get the DEXScreener information first
     const dexScreenerInfo = await scrapeDexScreener(issuerAddress);
 
-    return `📄 XRPL Issuer Contract
+    const baseText = `📄 XRPL Issuer Contract
 ━━━━━━━━━━━━━━━━━━━━
-${dexScreenerInfo}
+${dexScreenerInfo.text}
 
 📍 Address: ${issuerAddress}
 
@@ -415,8 +453,16 @@ ${dexScreenerInfo}
 🔄 View Latest Transaction:
   • https://xrpscan.com/tx/${accountInfo.PreviousTxnID}
 ━━━━━━━━━━━━━━━━━━━━━`;
+
+    return {
+      text: baseText,
+      imageUrl: dexScreenerInfo.imageUrl,
+    };
   } catch (error) {
     console.error("Error fetching token info:", error);
-    return "❌ Error fetching contract information. Please try again.";
+    return {
+      text: "❌ Error fetching contract information. Please try again.",
+      imageUrl: null,
+    };
   }
 };
