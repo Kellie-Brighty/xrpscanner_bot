@@ -40,6 +40,7 @@ bot.onText(/\/start/, (msg) => {
 // Listen for any message that looks like an XRP address
 bot.on("message", async (msg) => {
   const text = msg.text;
+  const chatId = msg.chat.id;
 
   // Skip commands
   if (text.startsWith("/")) return;
@@ -47,16 +48,19 @@ bot.on("message", async (msg) => {
   // Check if the message matches XRP address format
   if (text.match(/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/)) {
     try {
+      // Show typing state
+      bot.sendChatAction(chatId, "typing");
+
       const tokenInfo = await fetchTokenInfo(text);
 
-      bot.sendMessage(msg.chat.id, tokenInfo, {
+      bot.sendMessage(chatId, tokenInfo, {
         parse_mode: "Markdown",
         disable_web_page_preview: true,
       });
     } catch (error) {
       console.error(error);
       bot.sendMessage(
-        msg.chat.id,
+        chatId,
         "⚠️ *Error fetching token data.* Please check the address and try again.",
         { parse_mode: "Markdown" }
       );
