@@ -22,12 +22,30 @@ const REQUIRED_CHANNEL_URL = "https://t.me/NorthernLabs";
 // Modify the membership check function
 const checkChannelMembership = async (bot, userId) => {
   try {
+    console.log(
+      `Checking membership for user ${userId} in channel ${REQUIRED_CHANNEL_ID}`
+    );
     const chatMember = await bot.getChatMember(REQUIRED_CHANNEL_ID, userId);
-    return ["member", "administrator", "creator"].includes(chatMember.status);
+    console.log("Chat member status:", chatMember.status);
+
+    // Include 'left' in debug output
+    const isMember = ["member", "administrator", "creator"].includes(
+      chatMember.status
+    );
+    console.log(`Is member: ${isMember}, Status: ${chatMember.status}`);
+
+    return isMember;
   } catch (error) {
-    console.error("Error checking membership:", error);
-    // If we can't check membership, we'll assume they're not a member
-    return false;
+    // More detailed error logging
+    console.error("Error checking membership:", {
+      error: error.message,
+      userId,
+      channelId: REQUIRED_CHANNEL_ID,
+      response: error.response?.body,
+    });
+
+    // Throw the error instead of returning false
+    throw error;
   }
 };
 
@@ -95,9 +113,12 @@ bot.on("message", async (msg) => {
   if (msg.chat.type !== "private") return;
 
   try {
+    console.log(`Checking membership for user ${userId}`);
     const isMember = await checkChannelMembership(bot, userId);
+    console.log(`Membership check result: ${isMember}`);
 
     if (!isMember) {
+      console.log(`User ${userId} is not a member, sending join message`);
       await bot.sendMessage(
         chatId,
         "⚠️ *You need to join our channel to use this bot*\n\nPlease join using the button below, then try your request again.",
@@ -175,11 +196,21 @@ bot.on("message", async (msg) => {
       }
     }
   } catch (error) {
-    console.error("Error checking member status:", error);
-    if (error.response && error.response.statusCode === 403) {
+    console.error("Error in message handler:", {
+      error: error.message,
+      userId,
+      chatId,
+      responseBody: error.response?.body,
+    });
+
+    // More specific error handling
+    if (
+      error.response?.statusCode === 403 ||
+      error.message.includes("bot was blocked")
+    ) {
       await bot.sendMessage(
         chatId,
-        "⚠️ *Please join our channel to use this bot*\n\nClick the button below to join.",
+        "⚠️ *Unable to verify channel membership*\n\nPlease make sure:\n1. You've joined our channel\n2. You haven't blocked the bot\n3. Try leaving and rejoining the channel",
         {
           parse_mode: "Markdown",
           reply_markup: {
@@ -192,7 +223,7 @@ bot.on("message", async (msg) => {
     } else {
       await bot.sendMessage(
         chatId,
-        "❌ An error occurred. Please try again later.",
+        "❌ An error occurred while checking membership. Please try again later.",
         { parse_mode: "Markdown" }
       );
     }
